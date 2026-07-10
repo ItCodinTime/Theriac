@@ -35,3 +35,13 @@ VULTR_VECTOR_COLLECTION_NAME = os.getenv("VULTR_VECTOR_COLLECTION_NAME", "panace
 VULTR_RAG_MODEL = os.getenv("VULTR_RAG_MODEL", "qwen2.5-32b-instruct")
 VULTR_TOOL_MODEL = os.getenv("VULTR_TOOL_MODEL", VULTR_MAIN_MODEL)
 VULTR_NATIVE_STRICT = os.getenv("VULTR_NATIVE_STRICT", "false").lower() == "true"
+
+# Supermemory — primary memory / RAG engine (self-hosted, local, zero-egress).
+# Runs as a single binary on localhost:6767 with an embedded graph engine and
+# local embeddings; its extraction LLM is pointed at Vultr Serverless Inference.
+SUPERMEMORY_BASE_URL = os.getenv("SUPERMEMORY_BASE_URL", "http://localhost:6767")
+SUPERMEMORY_API_KEY = os.getenv("SUPERMEMORY_API_KEY", "")
+SUPERMEMORY_TIMEOUT = float(os.getenv("SUPERMEMORY_TIMEOUT", "30"))
+SUPERMEMORY_SEARCH_LIMIT = int(os.getenv("SUPERMEMORY_SEARCH_LIMIT", "5"))
+# When true, mirror sealed records to the legacy Vultr Vector Store archive tier.
+VULTR_ARCHIVE_ENABLED = os.getenv("VULTR_ARCHIVE_ENABLED", "false").lower() == "true"

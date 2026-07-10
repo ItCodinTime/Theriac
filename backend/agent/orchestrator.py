@@ -10,8 +10,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-# Module-level scan history for drift detection (device_model → last Contract A).
-# Keyed on the manufacturer-required ports so drift reflects real document change.
+# In-process cache of the last Contract A per device — a fast path for drift
+# detection within a single process. The durable, restart-safe baseline lives in
+# the Supermemory device profile (services.memory.load_device_profile); this cache
+# just avoids an index round-trip for back-to-back scans of the same device.
 _policy_history: dict[str, "ContractA"] = {}
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -29,14 +31,16 @@ from services.vultr_inference import StreamToken, complete, run_agentic_loop
 from services.vultr_object_storage import VultrObjectStorage, VultrObjectStorageError
 from services.policy_leases import cancel_expiry, schedule_expiry
 from services.vultr_database import save_evidence_index
-from services.vultr_vector import (
+from services.memory import (
     IngestionResult,
-    VultrVectorStore,
-    VultrVectorStoreError,
+    MemoryError,
     ingest_manual,
+    load_device_profile,
     query_cve,
     query_manual,
+    record_enforcement,
     retrieve_document,
+    save_device_profile,
 )
 
 # Demo manual — sourced from the real Philips IntelliVue Data Export Interface
@@ -200,7 +204,7 @@ async def run_pipeline(
             f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
             f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
         )
-    except VultrVectorStoreError as exc:
+    except MemoryError as exc:
         await _emit(f"[STEP 5 WARN] Vector Store ingestion failed ({exc}) — continuing without vector storage.\n")
         ingestion = IngestionResult(
             collection_id="",
@@ -215,7 +219,7 @@ async def run_pipeline(
         try:
             retrieved_context = await query_manual(ingestion.collection_id, contract_a)
             await _emit("[MEMORY DONE] Manufacturer evidence attached to the decision.\n")
-        except VultrVectorStoreError as exc:
+        except MemoryError as exc:
             await _emit(f"[MEMORY WARN] Manual retrieval failed ({exc}) — proceeding without retrieved evidence.\n")
     else:
         await _emit("[MEMORY SKIPPED] No Vector Store collection available for this run.\n")
@@ -287,7 +291,7 @@ async def run_pipeline(
                 contract_a.device_model, contract_a.firmware_version
             )
             await _emit("\n[CVE] Deterministic CVE cross-check against Vultr collection completed.\n")
-        except VultrVectorStoreError as exc:
+        except MemoryError as exc:
             await _emit(f"\n[CVE WARN] CVE cross-check unavailable ({exc}).\n")
 
     # Ground cve_flagged in the actual check_cve result. Nemotron sometimes calls
@@ -318,8 +322,17 @@ async def run_pipeline(
 
     # ------------------------------------------------------------------
     # Feature 3: Policy drift detection — flag if this device was seen before.
+    # The baseline comes from the durable Supermemory device profile (with an
+    # in-process cache fast path), so drift survives a backend restart instead of
+    # being forgotten with the old in-memory dict.
     # ------------------------------------------------------------------
-    drift_alert = _detect_drift(contract_a.device_model, contract_a)
+    prev_contract = _policy_history.get(contract_a.device_model)
+    if prev_contract is None:
+        try:
+            prev_contract = await load_device_profile(contract_a.device_model)
+        except MemoryError as exc:
+            await _emit(f"[DRIFT WARN] Could not load device profile ({exc}) — skipping drift check.\n")
+    drift_alert = _detect_drift(prev_contract, contract_a)
     if drift_alert:
         await _emit(
             f"\n[DRIFT ALERT] Manufacturer requirements changed since last scan: {drift_alert}\n",
@@ -397,14 +410,23 @@ async def run_pipeline(
     await publish_event("policy.enforced", lease.lease_id, event_payload)
     if ingestion.collection_id:
         try:
-            vector = VultrVectorStore(collection_id=ingestion.collection_id)
-            await vector.add_item(
+            await record_enforcement(
                 ingestion.collection_id,
-                json.dumps(event_payload, separators=(",", ":"), default=str),
+                event_payload,
                 f"Enforcement outcome for {contract_a.device_model}; lease {lease.lease_id}",
             )
-        except VultrVectorStoreError as exc:
-            await _emit(f"[MEMORY WARN] Could not write enforcement outcome back to Vector Store ({exc}).\n")
+        except MemoryError as exc:
+            await _emit(f"[MEMORY WARN] Could not write enforcement outcome back to memory ({exc}).\n")
+
+    # Persist this scan's Contract A as the durable, restart-safe drift baseline.
+    try:
+        await save_device_profile(
+            contract_a.device_model,
+            contract_a,
+            enforcement={"lease_id": lease.lease_id, "confidence_score": contract_b.confidence_score},
+        )
+    except MemoryError as exc:
+        await _emit(f"[MEMORY WARN] Could not persist device profile ({exc}).\n")
     await _emit(f"[EVIDENCE SEALED] Lease {lease.lease_id}; object {evidence_key or 'strict-mode disabled'}.\n")
 
     # ------------------------------------------------------------------
@@ -443,7 +465,7 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
                 device_model=arguments.get("device_model", ""),
                 top_k=arguments.get("top_k", 3),
             )
-        except VultrVectorStoreError as exc:
+        except MemoryError as exc:
             return f"NO_DOCUMENT_EVIDENCE: retrieval unavailable ({exc})."
 
     if tool_name == "check_cve":
@@ -454,7 +476,7 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
                 device_model=arguments.get("device_model", ""),
                 firmware_version=arguments.get("firmware_version", ""),
             )
-        except VultrVectorStoreError as exc:
+        except MemoryError as exc:
             return f'{{"cve_id": "NONE", "note": "CVE lookup unavailable ({exc})"}}'
 
     if tool_name == "apply_firewall_rule":
@@ -616,15 +638,16 @@ def _cve_id_from_evidence(cve_text: str) -> str:
     return ids[0]
 
 
-def _detect_drift(device_model: str, contract_a: "ContractA") -> str | None:
+def _detect_drift(prev: "ContractA | None", contract_a: "ContractA") -> str | None:
     """
-    Compares this scan's manufacturer-required ports against the last scan for
-    the same device. Drift is grounded in the document's stated requirements
-    (Contract A), not the LLM's generated firewall rules — so it reflects a real
-    change in the manual and never false-fires on run-to-run model variance.
+    Compares this scan's manufacturer-required ports against the previous scan's
+    Contract A for the same device. Drift is grounded in the document's stated
+    requirements (Contract A), not the LLM's generated firewall rules — so it
+    reflects a real change in the manual and never false-fires on run-to-run model
+    variance. ``prev`` is loaded from the durable Supermemory device profile (with
+    an in-process cache fast path), so drift survives a backend restart.
     Returns a human-readable drift summary if the required port set changed.
     """
-    prev = _policy_history.get(device_model)
     if not prev:
         return None
 

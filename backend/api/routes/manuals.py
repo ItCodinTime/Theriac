@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pypdf import PdfReader
@@ -13,7 +14,7 @@ from api.websocket import broadcast
 from schemas.contract_b import ContractB
 from services.vultr_inference import StreamToken
 from services.vultr_object_storage import VultrObjectStorage, VultrObjectStorageError
-from services.vultr_vector import VultrVectorStore
+from services.vultr_vector import VultrVectorStore, VultrVectorStoreError
 
 
 router = APIRouter()
@@ -45,13 +46,21 @@ async def upload_manual(
         elif storage.strict:
             raise VultrObjectStorageError("Vultr Object Storage is required in strict mode")
 
-        vector = VultrVectorStore()
-        collection_id = await vector.ensure_collection()
-        vector_file_id = await vector.add_file(
-            collection_id,
-            file.filename or "manual.pdf",
-            content,
-        )
+        # The extracted text is ingested into Supermemory (primary memory) by the
+        # pipeline itself. Uploading the original PDF binary to the Vultr Vector
+        # Store is now part of the optional archive tier — best-effort, never
+        # required, so a run succeeds with Supermemory alone.
+        if os.getenv("VULTR_ARCHIVE_ENABLED", "false").lower() == "true":
+            try:
+                vector = VultrVectorStore()
+                collection_id = await vector.ensure_collection()
+                vector_file_id = await vector.add_file(
+                    collection_id,
+                    file.filename or "manual.pdf",
+                    content,
+                )
+            except VultrVectorStoreError:
+                vector_file_id = ""
 
         async def on_token(token: StreamToken) -> None:
             await broadcast({"type": token.type, "text": token.text})

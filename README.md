@@ -51,7 +51,8 @@ Today, securing these devices is **manual, slow, and error-prone**: a human read
 | **True multi-step agent** | Plans → retrieves → checks CVEs → re-retrieves on conflict → decides → enforces. Not a one-shot RAG call. | `agent/orchestrator.py` |
 | **Per-rule citation trail** | Every ALLOW/DENY in the memo is grounded in a cited manual passage or CVE record. No fabrication. | `agent/prompts.py` |
 | **Explainable confidence** | Score derived from reasoning depth and evidence coverage — e.g. `82% — 3/4 rules grounded in cited evidence`. | `orchestrator.py` |
-| **Policy drift detection** | Re-scan a device and THERIAC flags what changed since last time — a continuous immune system, not a one-shot scan. | `orchestrator.py` |
+| **Ontology-aware memory graph** | Supermemory tracks `device → firmware → port → CVE` edges and resolves manual-requires-vs-CVE-forbids conflicts as first-class facts — retrieval is a graph, not flat vector similarity. | `services/memory.py` |
+| **Durable, restart-safe drift** | Per-device profiles persist in the local Supermemory graph, so "what changed since last scan" survives a backend restart — a continuous immune system, not a one-shot scan. | `orchestrator.py` |
 | **Multi-device orchestration** | Secure an entire fleet concurrently in one call. | `POST /agent/multi-run` |
 | **Full audit log** | Every autonomous decision is written to an append-only JSONL trail — every action is auditable. | `services/audit_log.py` |
 | **Live firewall enforcement** | Real Vultr Cloud Firewall rules, live-tested against a real target VM. Safe-by-default mock mode. | `services/vultr_firewall.py` |
@@ -73,16 +74,16 @@ STEP 2: Extract (Vultr Serverless Inference / Nemotron)
     +--> Contract A
     |
     v
-STEP 5: Chunk + Store (Vultr Vector Store)
+STEP 5: Store + Graph (Supermemory · local, per-device space)
     |
     v
-STEP MEMORY: RAG Retrieval (grounding evidence)
+STEP MEMORY: Hybrid Search + Rerank (grounding evidence)
     |
     v
 [Agentic Loop · Nemotron]
     |
-    +--(tool)--> retrieve_document --> Vultr Vector Store (manual chunks)
-    +--(tool)--> check_cve         --> Vultr Vector Store (CVE collection)
+    +--(tool)--> retrieve_document --> Supermemory (device space, reranked passages)
+    +--(tool)--> check_cve         --> Supermemory (cve-knowledge space + graph edges)
     +--(tool)--> apply_firewall_rule --> Vultr Cloud Firewall (live ALLOW/DENY)
     |
     v
@@ -98,9 +99,9 @@ STEP 7: Incident Memo + Citation Trail + Confidence Score
 |---|------|--------------|
 | 1 | **Ingest** | PDF uploaded to Vultr Object Storage |
 | 2 | **Extract** | Serverless Inference parses ports/protocols/firmware → Contract A, streamed live |
-| 3 | **Cross-Check** | Agent grounds a CVE lookup in a dedicated Vultr Vector Store collection |
+| 3 | **Cross-Check** | Agent grounds a CVE lookup in the local Supermemory `cve-knowledge` space (graph-linked to the device) |
 | 4 | **Decide & Score** | Agent generates the zero-trust policy + explainable confidence → Contract B |
-| 5 | **Store** | Manual chunks + policy pushed to Vultr Vector Store as the canonical record |
+| 5 | **Store** | Manual + policy stored in the device's local Supermemory space, building the memory graph (optional Vultr archive mirror) |
 | 6 | **Enforce** | Policy applied to a live Vultr Cloud Firewall |
 | 7 | **Report** | Cited incident memo generated and sealed as tamper-evident evidence |
 
@@ -110,13 +111,13 @@ STEP 7: Incident Memo + Citation Trail + Confidence Score
 
 - **Backend Orchestration** — FastAPI (Python 3.12), async agentic tool-calling loop
 - **AI Compute** — Vultr Serverless Inference (NVIDIA Nemotron) — *strictly no OpenAI, for the HIPAA-compliant zero-egress pitch*
-- **Memory / RAG** — Vultr Vector Store — *strictly no local ChromaDB/Qdrant*
+- **Memory / RAG** — self-hosted **Supermemory** graph engine, running locally with on-box embeddings — *its extraction LLM is pointed at Vultr inference, so the memory graph never leaves the host*. Vultr Vector Store is retained as the optional sealed-evidence archive tier.
 - **Enforcement** — Vultr Cloud Firewall APIs + Vultr VPCs
 - **Evidence & Events** — Vultr Object Storage (Object Lock) + Vultr Managed Kafka
 - **Identity** — Vultr IAM / OIDC operator identity in strict mode
 - **Frontend** — Next.js, React, WebSockets (real-time agent reasoning stream)
 
-> **The "no substitutions" rule:** every intelligent component runs on Vultr-native services. That is the whole pitch — a security product you could actually ship to a hospital on sovereign infrastructure.
+> **The pitch:** sovereign reasoning on Vultr + an on-prem memory graph. Every intelligent decision runs on Vultr inference, while the memory of the entire hospital — manuals, CVEs, per-device profiles — lives inside the hospital boundary with zero data egress. A security product you could actually ship to a hospital on sovereign infrastructure. See [`infra/supermemory/`](infra/supermemory/).
 
 ---
 
@@ -148,6 +149,21 @@ npm install
 cp .env.example .env.local   # point NEXT_PUBLIC_API_URL at your backend
 npm run dev                  # http://localhost:3000
 ```
+
+### Memory engine (Supermemory)
+
+Boot the local memory graph before running the agent — it wires Supermemory's
+extraction LLM to Vultr inference while keeping embeddings and retrieval on-box:
+
+```bash
+export $(grep -v '^#' backend/.env | xargs)      # load VULTR_* vars
+infra/supermemory/run-supermemory.sh             # serves http://localhost:6767
+# copy the printed API key into backend/.env as SUPERMEMORY_API_KEY
+
+python backend/scripts/ingest_cve.py backend/cves.json   # seed the CVE space
+```
+
+See [`infra/supermemory/`](infra/supermemory/) for details.
 
 ### Run the agent
 
@@ -224,7 +240,9 @@ Theriac/
 │   │   └── websocket.py             # live reasoning stream
 │   ├── services/
 │   │   ├── vultr_inference.py       # Serverless Inference client + agentic loop
-│   │   ├── vultr_vector.py          # Vector Store: ingest, RAG, CVE, retrieve
+│   │   ├── memory.py                # memory facade: ingest, search, CVE, drift profiles
+│   │   ├── supermemory.py           # local Supermemory client (graph + hybrid search)
+│   │   ├── vultr_vector.py          # legacy Vector Store — optional archive tier
 │   │   ├── vultr_firewall.py        # live Cloud Firewall executor (safe-by-default)
 │   │   ├── vultr_object_storage.py  # Object-Locked evidence sealing
 │   │   ├── vultr_events.py          # Managed Kafka event publishing
@@ -270,7 +288,7 @@ PLAN:
 | Owner | Domain | Deliverable |
 |-------|--------|-------------|
 | **Brian** | Agent Orchestration | Serverless Inference agent loop, citation trail, confidence scoring, drift detection, audit log, multi-run + explain APIs |
-| **Goutham** | The Memory Engine | Vultr Vector Store ingestion pipeline — chunking, collections, CVE grounding |
+| **Goutham** | The Memory Engine | Self-hosted Supermemory graph backbone — per-device spaces, hybrid search + rerank, durable drift profiles, CVE grounding (Vultr Vector Store archive tier) |
 | **Zain** | Threat Execution | Live Vultr Cloud Firewall executor + attacker VM handoff |
 | **Mohamed** | IIoT Target & Sourcing | Philips VM target, VPC networking, real manual sourcing (UDP 24105, p.29) |
 | **Oleh** | The Command Center | Next.js UI, WebSocket terminal, Human Override, Incident Memo rendering |

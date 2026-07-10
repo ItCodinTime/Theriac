@@ -15,7 +15,12 @@ async def health_check():
 
 @router.get("/readyz")
 async def readiness_check():
-    """Verify the mandatory Vultr inference plane before receiving traffic."""
+    """Verify the mandatory data planes before receiving traffic.
+
+    Two dependencies must be live: Vultr Serverless Inference (the reasoning
+    plane) and the local Supermemory server (the memory / RAG plane). Either one
+    being down means the agent cannot produce a grounded decision.
+    """
     base_url = os.getenv("VULTR_INFERENCE_BASE_URL", "https://api.vultrinference.com/v1")
     api_key = os.getenv("VULTR_INFERENCE_API_KEY", "")
     if not api_key:
@@ -29,8 +34,17 @@ async def readiness_check():
             response.raise_for_status()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Vultr Inference is unavailable") from exc
+
+    supermemory_url = os.getenv("SUPERMEMORY_BASE_URL", "http://localhost:6767").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.get(supermemory_url + "/")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Supermemory memory plane is unavailable") from exc
+
     return {
         "status": "ready",
         "inference": "ok",
+        "memory": "ok",
         "native_strict": os.getenv("VULTR_NATIVE_STRICT", "false").lower() == "true",
     }

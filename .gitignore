@@ -10,6 +10,10 @@ infra/zain/.env.*
 !infra/zain/.env.example
 .claude/settings.local.json
 
+# Supermemory local server — encrypted on-disk memory store (runtime data)
+.supermemory/
+backend/.supermemory/
+
 # Python
 __pycache__/
 *.py[cod]
