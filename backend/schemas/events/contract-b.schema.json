@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "panacea.contract-b.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target_vpc_id", "firewall_rules", "confidence_score", "cve_flagged", "memo_text"],
+  "properties": {
+    "target_vpc_id": {"type": "string", "minLength": 1},
+    "firewall_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["port", "action"],
+        "properties": {
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "action": {"enum": ["ALLOW", "DENY"]}
+        }
+      }
+    },
+    "confidence_score": {"type": "integer", "minimum": 0, "maximum": 100},
+    "cve_flagged": {"type": "string"},
+    "memo_text": {"type": "string"}
+  }
+}

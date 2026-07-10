@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: panacea-config
+  namespace: panacea
+data:
+  VULTR_INFERENCE_BASE_URL: https://api.vultrinference.com/v1
+  VULTR_VECTOR_STORE_URL: https://api.vultrinference.com/v1/vector_store
+  VULTR_VECTOR_COLLECTION_NAME: panacea-manuals
+  VULTR_RAG_MODEL: qwen2.5-32b-instruct
+  VULTR_NATIVE_STRICT: "true"
+  VULTR_POLICY_LEASE_SECONDS: "900"
+  VULTR_ALLOWED_SOURCE_SUBNET: 0.0.0.0
+  VULTR_ALLOWED_SOURCE_SUBNET_SIZE: "0"
+  VULTR_MANUAL_BUCKET: panacea-manuals
+  VULTR_EVIDENCE_BUCKET: panacea-evidence
+  VULTR_EVIDENCE_RETENTION_DAYS: "365"
+  PANACEA_OPERATOR_ROLE: panacea-operator
+  PANACEA_CORS_ORIGINS: https://panacea.example.com

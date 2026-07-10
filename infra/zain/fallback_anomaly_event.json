@@ -1,0 +1,13 @@
+{
+  "event_type": "unauthorized_lateral_probe",
+  "source": "panacea-attacker",
+  "source_ip": "10.13.0.10",
+  "target": "panacea-philips-target",
+  "target_ip": "10.13.0.20",
+  "attempted_port": 22,
+  "protocol": "TCP",
+  "device_model": "Philips_IntelliVue",
+  "firmware_version": "B.01",
+  "severity": "high",
+  "reason": "SSH probe against medical device not present in approved manual policy"
+}

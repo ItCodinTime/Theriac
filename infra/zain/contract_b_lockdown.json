@@ -1,0 +1,10 @@
+{
+  "target_vpc_id": "vpc-medical-01",
+  "firewall_rules": [
+    {"port": 3200, "action": "ALLOW"},
+    {"port": 22, "action": "DENY"}
+  ],
+  "confidence_score": 96,
+  "cve_flagged": "CVE-2023-XXXX",
+  "memo_text": "Blocked lateral pivot on Port 22. Allowed Port 3200 per Vector ID: 12345."
+}

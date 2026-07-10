@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "panacea.contract-a.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["device_model", "firmware_version", "allowed_ports", "source_doc_id"],
+  "properties": {
+    "device_model": {"type": "string", "minLength": 1},
+    "firmware_version": {"type": "string", "minLength": 1},
+    "allowed_ports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["port", "protocol", "reason"],
+        "properties": {
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "protocol": {"enum": ["TCP", "UDP"]},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "source_doc_id": {"type": "string", "minLength": 1}
+  }
+}

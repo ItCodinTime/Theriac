@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: panacea-backend
+  namespace: panacea
+spec:
+  # Policy lease timers are owned by this worker; use one replica until the
+  # Kafka lease-reconciler deployment is enabled.
+  replicas: 1
+  selector:
+    matchLabels: {app: panacea-backend}
+  template:
+    metadata:
+      labels: {app: panacea-backend}
+    spec:
+      containers:
+        - name: backend
+          image: sjc.vultrcr.com/panacea/backend:latest
+          ports:
+            - {name: http, containerPort: 8000}
+          envFrom:
+            - configMapRef: {name: panacea-config}
+            - secretRef: {name: panacea-secrets}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: panacea-backend
+  namespace: panacea
+spec:
+  type: LoadBalancer
+  selector: {app: panacea-backend}
+  ports:
+    - {name: http, port: 8000, targetPort: http}

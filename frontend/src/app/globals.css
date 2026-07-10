@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/* Panacea Command Center — design system                             */
+/* Composio-inspired: near-black canvas, brightness-step elevation,   */
+/* a single electric-blue voltage, compact radii, mono section labels.*/
+/* ------------------------------------------------------------------ */
+
+:root {
+  /* Canvas + elevation ladder (brightness steps, not shadows). */
+  --background: #0f0f0f;
+  --surface: #181818;
+  --surface-2: #222222;
+  --surface-3: #2a2a2a;
+  --recessed: #000000;
+
+  --foreground: #ededed;
+  --muted: #a0a0a0;
+  --faint: #6b6b6b;
+
+  /* Hairlines. */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  /* Single brand voltage + a readable interactive tint of it. */
+  --primary: #0007cd;
+  --accent: #5b6cff;
+  --accent-3: #8a90c9;
+
+  /* Semantic (domain needs allow/deny + secure/threat). */
+  --accent-2: #3ecf8e;
+  --danger: #fb7185;
+  --warn: #f5b544;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-recessed: var(--recessed);
+  --color-hairline: var(--border);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-primary: var(--primary);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-3: var(--accent-3);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  background-color: var(--background);
+  /* One restrained blue spotlight glow up top, otherwise a flat canvas. */
+  background-image: radial-gradient(
+    52rem 32rem at 50% -14%,
+    rgba(0, 7, 205, 0.18),
+    transparent 70%
+  );
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Surfaces: elevation via brightness steps, no drop shadows. ---- */
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.glass-hover {
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+}
+.glass-hover:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+/* Recessed surface for terminals / code (darkest step). */
+.recessed {
+  background: var(--recessed);
+  border: 1px solid var(--border);
+}
+
+/* Uppercase mono section label — the developer-tool dialect. */
+.section-label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* Radial blue spotlight behind hero/CTA anchors. */
+.spotlight {
+  position: relative;
+  isolation: isolate;
+}
+.spotlight::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  background: radial-gradient(
+    30rem 14rem at 22% 0%,
+    rgba(0, 7, 205, 0.22),
+    transparent 65%
+  );
+  pointer-events: none;
+}
+
+/* Subtle grid overlay used on the telemetry / chart panes. */
+.grid-overlay {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Slim scrollbar for terminal / feeds. */
+.slim-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.slim-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.slim-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+.slim-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(91, 108, 255, 0.5);
+}
+
+/* Live status pulse. */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(62, 207, 142, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(62, 207, 142, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(62, 207, 142, 0);
+  }
+}
+.pulse-dot {
+  animation: pulse-ring 1.9s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
