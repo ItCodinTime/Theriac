@@ -317,7 +317,8 @@ async def run_pipeline(
             tool_evidence["attacks"] = attack_history.model_dump_json()
             await _emit(
                 f"\n[ATTACK MEMORY] Recalled {attack_history.total_events} event(s) "
-                f"from {attack_history.space}; harden ports={attack_history.harden_ports}.\n"
+                f"from {attack_history.space}; harden ports={attack_history.harden_ports}; "
+                f"CVE graph={attack_history.related_cves}.\n"
             )
         except Exception as exc:  # noqa: BLE001 — attack memory must never crash the run
             await _emit(f"\n[ATTACK MEMORY WARN] Recall unavailable ({exc}).\n")
@@ -329,7 +330,8 @@ async def run_pipeline(
     else:
         await _emit(
             f"\n[ATTACK MEMORY] Agent recalled {attack_history.total_events} event(s); "
-            f"harden ports={attack_history.harden_ports}.\n"
+            f"harden ports={attack_history.harden_ports}; "
+            f"CVE graph={attack_history.related_cves}.\n"
         )
 
     # Closed loop: prior probes force DENY even if the manual/agent ALLOW'd them.
@@ -572,6 +574,8 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
                     "total_events": 0,
                     "probed_ports": [],
                     "harden_ports": [],
+                    "related_cves": [],
+                    "correlations": [],
                     "narrative": f"Attack history unavailable ({exc})",
                     "memory_doc_ids": [],
                 }
@@ -908,6 +912,15 @@ def _build_memo(
         if attack_history.memory_doc_ids:
             memory_lines.append(
                 f"  - Attack memory docs: {', '.join(attack_history.memory_doc_ids[:5])}"
+            )
+        if attack_history.related_cves:
+            memory_lines.append(
+                f"  - CVE graph (device→CVE→probe): {', '.join(attack_history.related_cves)}"
+            )
+        for corr in attack_history.correlations[:5]:
+            memory_lines.append(
+                f"  - Edge: {corr.device_model} --port:{corr.port}--> {corr.cve_id} "
+                f"({corr.probe_count}×, {corr.severity or 'n/a'})"
             )
         if attack_history.narrative:
             memory_lines.append(f"  - Attack recall: {attack_history.narrative}")

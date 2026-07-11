@@ -84,9 +84,12 @@ def main() -> int:
                 "severity": event.get("severity") or "high",
                 "firmware_version": event.get("firmware_version") or "",
                 "reason": event.get("reason") or "Attack simulator SSH/HL7 probe",
+                "observation_source": "attack_simulator",
+                "reachable": bool(event.get("port_22_reachable")),
+                "raw_summary": json.dumps(event),
             }
             req = urllib.request.Request(
-                f"{api}/api/v1/attacks",
+                f"{api}/api/v1/attacks?run_immunity=true",
                 data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json"},
                 method="POST",

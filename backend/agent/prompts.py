@@ -88,10 +88,10 @@ TOOLS = [
         "function": {
             "name": "check_attack_history",
             "description": (
-                "Recall observed attack / probe / blocked-connection telemetry for this device from "
-                "Supermemory (attacks:<device> space). Returns probed ports and which ports must be "
-                "hardened to DENY on the next policy. Always call this before apply_firewall_rule — "
-                "a port that has been attacked should be denied even if the manual mentions it."
+                "Recall observed attack / probe / blocked-connection / HL7 telemetry for this device "
+                "from Supermemory (attacks:<device> space), including device→CVE→port graph edges. "
+                "Returns probed ports, related CVEs, and harden_ports that MUST be DENY. "
+                "Always call before apply_firewall_rule."
             ),
             "parameters": {
                 "type": "object",
