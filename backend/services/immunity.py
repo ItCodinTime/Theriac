@@ -148,6 +148,11 @@ async def _search_similar(
     Tries the graph-aware /v4/search first, then falls back to chunk-level
     /v3/search when the graph has no matching memories yet — matching the
     resilient retrieval pattern used by the existing memory facade.
+
+    Also scans listed documents whose metadata.fingerprint matches exactly.
+    That matters for the false-positive learning loop: analyst feedback is
+    stored with the fingerprint in metadata, and semantic search alone can miss
+    it before the graph has finished extracting memories.
     """
     sm = client or SupermemoryClient()
     tag = _get_container_tag()
@@ -160,23 +165,58 @@ async def _search_similar(
         records = await sm.search_documents(fingerprint, container_tag=tag, limit=limit)
 
     results: list[ImmuneMemoryRecord] = []
-    for record in records:
-        text = _extract_text_from_record(record)
-        if not text:
-            continue
+    seen_summaries: set[str] = set()
 
+    def _append_from_text(text: str) -> None:
+        if not text or text in seen_summaries:
+            return
         try:
             data = json.loads(text)
-            results.append(ImmuneMemoryRecord(**data))
+            record = ImmuneMemoryRecord(**data)
         except (json.JSONDecodeError, TypeError, ValueError):
-            # Unstructured memory — wrap it as a minimal record.
-            results.append(ImmuneMemoryRecord(
+            record = ImmuneMemoryRecord(
                 fingerprint=fingerprint,
                 incident_summary=text[:500],
-            ))
+            )
+        results.append(record)
+        seen_summaries.add(text)
 
-    return results
+    for record in records:
+        _append_from_text(_extract_text_from_record(record))
 
+    # Deterministic metadata scan — guarantees FP feedback is recallable even
+    # when hybrid search has not indexed the document content yet.
+    try:
+        documents = await sm.list_documents(tag, limit=max(limit * 5, 50))
+    except (SupermemoryError, Exception):  # noqa: BLE001
+        documents = []
+
+    for doc in documents:
+        metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+        if str(metadata.get("fingerprint") or "") != fingerprint:
+            continue
+        text = _extract_text_from_record(doc)
+        if not text:
+            # list_documents often omits content — reconstruct a minimal record
+            # from metadata so FP flags still influence confidence.
+            fp_flag = str(metadata.get("false_positive", "")).lower() in {"true", "1", "yes"}
+            text = json.dumps(
+                {
+                    "fingerprint": fingerprint,
+                    "false_positive": fp_flag,
+                    "attack_type": metadata.get("attack_type"),
+                    "incident_summary": (
+                        f"Analyst feedback: {'FALSE POSITIVE' if fp_flag else 'prior immune memory'} "
+                        f"for fingerprint {fingerprint}"
+                    ),
+                    "action_taken": "false_positive" if fp_flag else "",
+                }
+            )
+        _append_from_text(text)
+        if len(results) >= limit:
+            break
+
+    return results[:limit]
 
 # ---------------------------------------------------------------------------
 # Confidence scoring

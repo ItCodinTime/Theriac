@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass, field
 
 from schemas.contract_a import ContractA
 from services.supermemory import (
@@ -32,14 +33,28 @@ from services.vultr_vector import IngestionResult
 # Public alias so callers catch one memory-layer error type regardless of engine.
 MemoryError = SupermemoryError
 
+
+@dataclass(frozen=True)
+class MemoryCitationTrail:
+    """Structured Supermemory refs for the incident-memo citation trail."""
+
+    space: str = ""
+    source_doc_id: str = ""
+    item_ids: tuple[str, ...] = ()
+    prior_incidents: tuple[str, ...] = field(default_factory=tuple)
+
+
 __all__ = [
     "IngestionResult",
+    "MemoryCitationTrail",
     "MemoryError",
     "ingest_manual",
     "query_manual",
     "query_cve",
     "retrieve_document",
     "record_enforcement",
+    "query_prior_incidents",
+    "build_citation_trail",
     "load_device_profile",
     "save_device_profile",
 ]
@@ -155,6 +170,117 @@ async def record_enforcement(collection_id: str, payload: dict, description: str
     await SupermemoryClient().add_document(
         content, container_tag=tag, metadata={"type": "enforcement", "description": description}
     )
+
+
+async def query_prior_incidents(device_model: str, *, limit: int = 5) -> list[str]:
+    """Return short summaries of prior enforcement / incident memory for a device.
+
+    Used by the incident memo so citations show institutional history from
+    Supermemory — not just the current manual page refs.
+    """
+    tag = device_container_tag(device_model)
+    client = SupermemoryClient()
+    summaries: list[str] = []
+
+    # Prefer semantic recall of prior enforcements / isolations.
+    try:
+        records = await client.search(
+            f"prior firewall enforcement isolation incident for {device_model}",
+            container_tag=tag,
+            limit=limit,
+        )
+        if not records:
+            records = await client.search_documents(
+                f"enforcement isolation {device_model}",
+                container_tag=tag,
+                limit=limit,
+            )
+        for record in records:
+            text = _summarize_memory_record(record)
+            if text and text not in summaries:
+                summaries.append(text)
+            if len(summaries) >= limit:
+                return summaries
+    except SupermemoryError:
+        pass
+
+    # Deterministic fallback: list docs and pick enforcement metadata.
+    try:
+        documents = await client.list_documents(tag, limit=max(limit * 4, 20))
+    except SupermemoryError:
+        return summaries
+
+    for doc in documents:
+        metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+        if metadata.get("type") != "enforcement":
+            continue
+        description = str(metadata.get("description") or "").strip()
+        doc_id = str(doc.get("id") or doc.get("documentId") or doc.get("document_id") or "").strip()
+        line = description or "Prior enforcement outcome on record"
+        if doc_id:
+            line = f"{line} [sm:{doc_id}]"
+        if line not in summaries:
+            summaries.append(line)
+        if len(summaries) >= limit:
+            break
+    return summaries
+
+
+def build_citation_trail(
+    *,
+    device_model: str,
+    ingestion: IngestionResult | None,
+    prior_incidents: list[str] | None = None,
+) -> MemoryCitationTrail:
+    """Assemble the Supermemory citation block for the incident memo."""
+    if ingestion is None:
+        return MemoryCitationTrail(
+            space=device_container_tag(device_model),
+            prior_incidents=tuple(prior_incidents or ()),
+        )
+    return MemoryCitationTrail(
+        space=ingestion.collection_id or device_container_tag(device_model),
+        source_doc_id=ingestion.source_doc_id,
+        item_ids=tuple(ingestion.item_ids or ()),
+        prior_incidents=tuple(prior_incidents or ()),
+    )
+
+
+def _summarize_memory_record(record: dict) -> str:
+    """Flatten a search hit into a one-line citation-friendly summary."""
+    from services.supermemory import _record_text  # local helper, shared shape
+
+    text = _record_text(record).strip()
+    doc_id = str(
+        record.get("id")
+        or record.get("documentId")
+        or record.get("document_id")
+        or ""
+    ).strip()
+    if not text:
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        text = str(metadata.get("description") or "").strip()
+    if not text:
+        return ""
+    # Enforcement payloads are JSON — pull a readable lease / CVE hint if present.
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            lease = payload.get("lease") if isinstance(payload.get("lease"), dict) else {}
+            contract_b = payload.get("contract_b") if isinstance(payload.get("contract_b"), dict) else {}
+            lease_id = lease.get("lease_id") or payload.get("lease_id") or ""
+            cve = contract_b.get("cve_flagged") or ""
+            bits = ["Prior enforcement"]
+            if cve and str(cve).upper() != "NONE":
+                bits.append(f"CVE {cve}")
+            if lease_id:
+                bits.append(f"lease {lease_id}")
+            text = " — ".join(bits)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        text = text.replace("\n", " ")[:180]
+    if doc_id:
+        return f"{text} [sm:{doc_id}]"
+    return text
 
 
 # ---------------------------------------------------------------------------
