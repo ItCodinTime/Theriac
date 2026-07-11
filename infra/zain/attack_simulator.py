@@ -65,7 +65,37 @@ def run() -> dict:
 
 
 def main() -> int:
-    print(json.dumps(run(), indent=2))
+    event = run()
+    print(json.dumps(event, indent=2))
+
+    # Optional closed loop: POST the anomaly into Theriac attack memory so the
+    # next agent scan can check_attack_history and harden the policy.
+    api = (os.environ.get("THERIAC_API_URL") or os.environ.get("NEXT_PUBLIC_API_URL") or "").rstrip("/")
+    if api:
+        try:
+            import urllib.request
+
+            payload = {
+                "device_model": event.get("device_model") or "Philips_IntelliVue",
+                "attempted_port": event.get("attempted_port") or 22,
+                "protocol": event.get("protocol") or "TCP",
+                "source_ip": (os.environ.get("VULTR_ATTACKER_PUBLIC_IP") or "").strip(),
+                "event_type": event.get("event_type") or "unauthorized_lateral_probe",
+                "severity": event.get("severity") or "high",
+                "firmware_version": event.get("firmware_version") or "",
+                "reason": event.get("reason") or "Attack simulator SSH/HL7 probe",
+            }
+            req = urllib.request.Request(
+                f"{api}/api/v1/attacks",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode()
+            print(f"\n[attack-memory] posted to {api}/api/v1/attacks → {body}", file=sys.stderr)
+        except Exception as exc:
+            print(f"\n[attack-memory] POST skipped/failed: {exc}", file=sys.stderr)
     return 0
 
 

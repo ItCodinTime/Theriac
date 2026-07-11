@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes.agent import router as agent_router
+from api.routes.attacks import router as attacks_router
 from api.routes.evidence import router as evidence_router
 from api.routes.health import router as health_router
 from api.routes.immunity import router as immunity_router
@@ -44,6 +45,7 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(agent_router)
+app.include_router(attacks_router)
 app.include_router(immunity_router)
 app.include_router(manuals_router)
 app.include_router(policy_router)

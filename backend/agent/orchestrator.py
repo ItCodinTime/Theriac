@@ -45,6 +45,8 @@ from services.memory import (
     retrieve_document,
     save_device_profile,
 )
+from services.attack_memory import harden_policy_from_attacks, query_attack_history
+from schemas.attack_event import AttackHistorySummary
 
 # Demo manual — sourced from the real Philips IntelliVue Data Export Interface
 # Programming Guide (part 4535 645 88011, release L.0, 08/2015, 339 pp).
@@ -244,7 +246,9 @@ async def run_pipeline(
     # Count reasoning characters to derive real confidence from deliberation depth.
     # Also capture evidence returned by tool calls so the memo can cite it.
     reasoning_chars = 0
-    tool_evidence: dict[str, str] = {"cve": "", "retrieved": ""}
+    tool_evidence: dict[str, str] = {"cve": "", "retrieved": "", "attacks": ""}
+    attack_history: AttackHistorySummary | None = None
+    attack_harden_notes: list[str] = []
 
     async def _on_token_counted(token: StreamToken) -> None:
         nonlocal reasoning_chars
@@ -254,11 +258,19 @@ async def run_pipeline(
             await on_token(token)
 
     async def _tool_executor_capturing(tool_name: str, arguments: dict) -> str:
+        nonlocal attack_history
         result = await _tool_executor(tool_name, arguments)
         if tool_name == "check_cve":
             tool_evidence["cve"] = result
         elif tool_name == "retrieve_document":
             tool_evidence["retrieved"] += ("\n" + result if tool_evidence["retrieved"] else result)
+        elif tool_name == "check_attack_history":
+            tool_evidence["attacks"] = result
+            try:
+                payload = json.loads(result)
+                attack_history = AttackHistorySummary(**payload)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
         return result
 
     final_message = await run_agentic_loop(
@@ -297,6 +309,43 @@ async def run_pipeline(
         except MemoryError as exc:
             await _emit(f"\n[CVE WARN] CVE cross-check unavailable ({exc}).\n")
 
+    # Safety net: always recall attack telemetry so the learning loop is not
+    # skipped when the model forgets check_attack_history.
+    if attack_history is None:
+        try:
+            attack_history = await query_attack_history(contract_a.device_model)
+            tool_evidence["attacks"] = attack_history.model_dump_json()
+            await _emit(
+                f"\n[ATTACK MEMORY] Recalled {attack_history.total_events} event(s) "
+                f"from {attack_history.space}; harden ports={attack_history.harden_ports}.\n"
+            )
+        except Exception as exc:  # noqa: BLE001 — attack memory must never crash the run
+            await _emit(f"\n[ATTACK MEMORY WARN] Recall unavailable ({exc}).\n")
+            attack_history = AttackHistorySummary(
+                device_model=contract_a.device_model,
+                space="",
+                narrative=f"Attack memory unavailable ({exc})",
+            )
+    else:
+        await _emit(
+            f"\n[ATTACK MEMORY] Agent recalled {attack_history.total_events} event(s); "
+            f"harden ports={attack_history.harden_ports}.\n"
+        )
+
+    # Closed loop: prior probes force DENY even if the manual/agent ALLOW'd them.
+    if attack_history is not None and attack_history.harden_ports:
+        contract_b, attack_harden_notes = harden_policy_from_attacks(contract_b, attack_history)
+        if attack_harden_notes:
+            for note in attack_harden_notes:
+                await _emit(f"[ATTACK HARDEN] {note}\n", "reasoning")
+            # Re-apply so the live firewall reflects the hardened policy.
+            apply_firewall_rule(
+                target_vpc_id=contract_b.target_vpc_id,
+                firewall_rules=[r.model_dump() for r in contract_b.firewall_rules],
+                confidence_score=contract_b.confidence_score,
+                cve_flagged=contract_b.cve_flagged,
+                memo_text=contract_b.memo_text,
+            )
     # Ground cve_flagged in the actual check_cve result. Nemotron sometimes calls
     # the CVE tool, gets a real hit, but still reports NONE — so if the tool
     # surfaced a genuine CVE, trust the retrieved evidence and never drop it.
@@ -311,7 +360,14 @@ async def run_pipeline(
     # Long deliberation or rules with no supporting document → lower.
     # ------------------------------------------------------------------
     combined_evidence = "\n".join(
-        part for part in (retrieved_context, tool_evidence["retrieved"], tool_evidence["cve"]) if part
+        part
+        for part in (
+            retrieved_context,
+            tool_evidence["retrieved"],
+            tool_evidence["cve"],
+            tool_evidence.get("attacks", ""),
+        )
+        if part
     )
     grounded, total = _evidence_coverage(contract_b, combined_evidence)
     real_confidence = _confidence_from_reasoning(
@@ -362,7 +418,13 @@ async def run_pipeline(
         prior_incidents=prior_incidents,
     )
     contract_b.memo_text = _build_memo(
-        contract_b, contract_a, tool_evidence, confidence_explanation, citation_trail
+        contract_b,
+        contract_a,
+        tool_evidence,
+        confidence_explanation,
+        citation_trail,
+        attack_harden_notes=attack_harden_notes,
+        attack_history=attack_history,
     )
     if drift_alert:
         # Appended after _build_memo so the drift finding survives into the memo.
@@ -497,6 +559,23 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
             )
         except MemoryError as exc:
             return f'{{"cve_id": "NONE", "note": "CVE lookup unavailable ({exc})"}}'
+
+    if tool_name == "check_attack_history":
+        try:
+            history = await query_attack_history(arguments.get("device_model", ""))
+            return history.model_dump_json()
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps(
+                {
+                    "device_model": arguments.get("device_model", ""),
+                    "space": "",
+                    "total_events": 0,
+                    "probed_ports": [],
+                    "harden_ports": [],
+                    "narrative": f"Attack history unavailable ({exc})",
+                    "memory_doc_ids": [],
+                }
+            )
 
     if tool_name == "apply_firewall_rule":
         return apply_firewall_rule(
@@ -725,13 +804,15 @@ def _build_memo(
     tool_evidence: dict,
     confidence_explanation: str,
     citation_trail: MemoryCitationTrail | None = None,
+    attack_harden_notes: list[str] | None = None,
+    attack_history: AttackHistorySummary | None = None,
 ) -> str:
     """
     Builds the incident memo deterministically from structured data.
     Guarantees a clean THREAT/ACTION/STATUS/CITATIONS format every time —
     no LLM reasoning leaks, no template placeholders, no truncation.
-    Citations ground both manual page refs and Supermemory document IDs /
-    prior institutional incidents.
+    Citations ground manual page refs, Supermemory document IDs, prior
+    institutional incidents, and attack-telemetry harden decisions.
     """
     allows = [r.port for r in contract_b.firewall_rules if r.action == "ALLOW"]
     denies = [r.port for r in contract_b.firewall_rules if r.action == "DENY"]
@@ -752,25 +833,30 @@ def _build_memo(
             f"introduced to hospital VPC with unevaluated network exposure."
         )
     )
+    if attack_history and attack_history.harden_ports:
+        threat += (
+            f" Attack memory reports prior probes on ports {attack_history.harden_ports} "
+            f"({attack_history.total_events} event(s) in {attack_history.space})."
+        )
 
     action = (
         f"Applied zero-trust firewall policy: ALLOW ports {allows} "
-        f"(manufacturer-required), DENY ports {denies} (lateral movement risk)."
+        f"(manufacturer-required), DENY ports {denies} (lateral movement / attack-memory risk)."
     )
 
     status = (
         f"Device network-isolated on {contract_b.target_vpc_id}. "
         f"Policy enforced at {contract_b.confidence_score}% confidence. "
-        f"All ports blocked except manufacturer-approved data channels."
+        f"All ports blocked except manufacturer-approved data channels not contradicted by attack memory."
     )
 
     # Map extracted port -> manual reason (carries page refs like "(p.29)")
     port_reasons = {p.port: p.reason for p in contract_a.allowed_ports}
+    harden_set = set(attack_history.harden_ports) if attack_history else set()
 
     # Per-rule citations grounded in retrieved evidence where possible
     citation_lines = []
     for rule in contract_b.firewall_rules:
-        port_str = str(rule.port)
         if rule.action == "ALLOW":
             # Always use the Contract A port reason — it carries the verified
             # page reference (e.g. "p.29") and is deterministic. RAG evidence
@@ -781,7 +867,17 @@ def _build_memo(
             else:
                 justification = f"Required by device manual for {contract_a.device_model} operation"
         else:
-            if rule.port == 22:
+            if rule.port in harden_set:
+                count = next(
+                    (p["count"] for p in (attack_history.probed_ports if attack_history else []) if p["port"] == rule.port),
+                    1,
+                )
+                space = attack_history.space if attack_history else "attacks:*"
+                justification = (
+                    f"Attack memory — port probed {count}× in {space}; "
+                    "hardened to DENY even if the manual mentions it"
+                )
+            elif rule.port == 22:
                 justification = (
                     "Manual states: all remote administration (SSH, port 22) must remain "
                     "disabled in clinical deployments to prevent lateral movement"
@@ -807,6 +903,16 @@ def _build_memo(
     for item_id in trail.item_ids:
         if item_id and item_id != trail.source_doc_id:
             memory_lines.append(f"  - Memory item: {item_id}")
+    if attack_history and attack_history.space:
+        memory_lines.append(f"  - Attack memory space: {attack_history.space}")
+        if attack_history.memory_doc_ids:
+            memory_lines.append(
+                f"  - Attack memory docs: {', '.join(attack_history.memory_doc_ids[:5])}"
+            )
+        if attack_history.narrative:
+            memory_lines.append(f"  - Attack recall: {attack_history.narrative}")
+    for note in attack_harden_notes or []:
+        memory_lines.append(f"  - Harden: {note}")
     if trail.prior_incidents:
         memory_lines.append("  - Prior institutional memory:")
         for prior in trail.prior_incidents:
