@@ -7,9 +7,11 @@ is pointed at Vultr Serverless Inference. This module talks to that local server
 directly and has no external vector-store dependency.
 
 Spaces are expressed through Supermemory's ``containerTags``: one tag per device
-(``device:<slug>``) for manuals + enforcement outcomes, and a shared
-``cve-knowledge`` tag for the CVE corpus. The ontology-aware memory graph and the
-per-container profile are built automatically as documents are ingested.
+(``device:<slug>``) for manuals + enforcement outcomes, a shared ``cve-knowledge``
+tag for the CVE corpus, and ``attacks:<slug>`` for observed probe / blocked-
+connection telemetry that hardens the next policy. The ontology-aware memory
+graph and the per-container profile are built automatically as documents are
+ingested.
 
 Payload field names (``containerTags``, the ``/v4/search`` result shape) follow
 Supermemory's documented API but are resolved defensively — helpers tolerate the
@@ -51,6 +53,12 @@ def device_container_tag(device_model: str) -> str:
     """Stable per-device space tag, e.g. 'device:philips_intellivue'."""
     slug = re.sub(r"[^a-z0-9]+", "_", (device_model or "unknown").strip().lower()).strip("_")
     return f"device:{slug or 'unknown'}"
+
+
+def attack_container_tag(device_model: str) -> str:
+    """Per-device attack-telemetry space, e.g. 'attacks:philips_intellivue'."""
+    slug = re.sub(r"[^a-z0-9]+", "_", (device_model or "unknown").strip().lower()).strip("_")
+    return f"attacks:{slug or 'unknown'}"
 
 
 class SupermemoryClient:

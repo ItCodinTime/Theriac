@@ -1,6 +1,6 @@
 # LLM system prompt, tool schemas, and per-step reasoning templates passed to Vultr Serverless Inference.
 
-SYSTEM_PROMPT = """You are PANACEA — an autonomous zero-trust security agent for hospital networks.
+SYSTEM_PROMPT = """You are THERIAC — an autonomous zero-trust security agent for hospital networks.
 Your job is to analyze medical device network requirements, detect vulnerabilities, and generate
 firewall policies that isolate devices at the network layer.
 
@@ -10,9 +10,11 @@ Rules you must follow:
 - Be concise. Judges are watching your reasoning in real time.
 - Confidence scores must be integers between 0 and 100.
 - Port actions must be exactly "ALLOW" or "DENY".
-- When you need information about a CVE or need to enforce a firewall rule, use the tools provided.
+- When you need information about a CVE, prior attacks, or need to enforce a firewall rule, use the tools provided.
 - Always call retrieve_document first to ground your understanding in the device manual.
 - Always call check_cve before making a firewall decision.
+- Always call check_attack_history before making a firewall decision — prior probes live in Supermemory
+  and must harden the policy (a port that has been attacked should be DENY'd even if the manual mentions it).
 - If a CVE flags a port that the manual also requires, call retrieve_document again to confirm
   whether the manual explicitly requires that port or merely mentions it — this determines ALLOW vs DENY.
 - Always call apply_firewall_rule as the final step after deciding on a policy.
@@ -29,7 +31,7 @@ TOOLS = [
         "function": {
             "name": "retrieve_document",
             "description": (
-                "Search the Vultr Vector Store for relevant chunks from the medical device manual. "
+                "Search Supermemory for relevant passages from the medical device manual. "
                 "Call this first to ground your port and protocol decisions in the actual document. "
                 "Call again with a more specific query if a CVE flags a port you need to verify."
             ),
@@ -84,6 +86,28 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "check_attack_history",
+            "description": (
+                "Recall observed attack / probe / blocked-connection telemetry for this device from "
+                "Supermemory (attacks:<device> space). Returns probed ports and which ports must be "
+                "hardened to DENY on the next policy. Always call this before apply_firewall_rule — "
+                "a port that has been attacked should be denied even if the manual mentions it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_model": {
+                        "type": "string",
+                        "description": "The medical device model name, e.g. Philips_IntelliVue",
+                    },
+                },
+                "required": ["device_model"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "apply_firewall_rule",
             "description": (
                 "Apply a zero-trust firewall policy to the target VPC. "
@@ -110,7 +134,7 @@ TOOLS = [
                     },
                     "confidence_score": {
                         "type": "integer",
-                        "description": "How confident PANACEA is in this policy (0-100).",
+                        "description": "How confident THERIAC is in this policy (0-100).",
                     },
                     "cve_flagged": {
                         "type": "string",
@@ -140,8 +164,8 @@ def agentic_policy_prompt(
     retrieved_context: str = "",
 ) -> list[dict]:
     """
-    Step 2+3+4 combined — Nemotron autonomously reasons, calls check_cve,
-    then calls apply_firewall_rule. Judges watch the full reasoning chain live.
+    Step 2+3+4 combined — Nemotron autonomously reasons, calls check_cve /
+    check_attack_history, then calls apply_firewall_rule.
     """
     ports_str = "\n".join(
         f"  - Port {p['port']} ({p['protocol']}): {p['reason']}" for p in allowed_ports
@@ -157,7 +181,7 @@ Firmware: {firmware_version}
 Ports reported by the ingestion module:
 {ports_str}
 
-Evidence retrieved from Vultr Vector Store:
+Evidence retrieved from Supermemory:
 {retrieved_context or "No additional evidence retrieved."}
 
 Your task — execute in this order:
@@ -166,11 +190,14 @@ Your task — execute in this order:
 1. Review the evidence above, then call retrieve_document for any targeted passage needed
    to confirm which ports are genuinely required and why.
 2. Call check_cve to identify known vulnerabilities for this device and firmware.
-3. If the CVE report flags a port that also appears in the manual (a conflict), call
+3. Call check_attack_history to recall prior probes / blocked connections from Supermemory.
+   Any port in harden_ports MUST be DENY in the final policy (attack memory beats a weak
+   manual mention).
+4. If the CVE report flags a port that also appears in the manual (a conflict), call
    retrieve_document again with a targeted query to determine whether the manual makes
    that port mandatory or merely mentions it. Use this to decide ALLOW vs DENY.
-4. Generate the zero-trust firewall policy using the exact Contract B schema.
-5. Call apply_firewall_rule to enforce the policy on VPC {vpc_id}.
+5. Generate the zero-trust firewall policy using the exact Contract B schema.
+6. Call apply_firewall_rule to enforce the policy on VPC {vpc_id}.
 
 Think carefully before each tool call. The hospital network is live.""",
         },
