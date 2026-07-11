@@ -141,6 +141,42 @@ class MemoryFacadeTests(unittest.TestCase):
         asyncio.run(shared.aclose())
         self.assertIsNone(loaded)
 
+    def test_query_prior_incidents_from_enforcement_metadata(self) -> None:
+        shared, factory = self._patched_client()
+
+        async def run():
+            with mock.patch.object(memory, "SupermemoryClient", factory):
+                tag = device_container_tag("Philips_IntelliVue")
+                await factory().add_document(
+                    '{"lease":{"lease_id":"lease-abc"},"contract_b":{"cve_flagged":"CVE-2018-10597"}}',
+                    container_tag=tag,
+                    metadata={
+                        "type": "enforcement",
+                        "description": "Enforcement outcome for Philips_IntelliVue; lease lease-abc",
+                    },
+                )
+                return await memory.query_prior_incidents("Philips_IntelliVue")
+
+        priors = asyncio.run(run())
+        asyncio.run(shared.aclose())
+        self.assertTrue(priors)
+        self.assertTrue(any("Philips" in p or "lease" in p.lower() or "enforcement" in p.lower() for p in priors))
+
+    def test_build_citation_trail_includes_doc_ids(self) -> None:
+        trail = memory.build_citation_trail(
+            device_model="Philips_IntelliVue",
+            ingestion=memory.IngestionResult(
+                collection_id="device:philips_intellivue",
+                source_doc_id="sm-manual-1",
+                item_ids=("sm-manual-1", "sm-chunk-2"),
+                chunk_count=1,
+            ),
+            prior_incidents=["Prior enforcement — lease lease-abc [sm:doc-9]"],
+        )
+        self.assertEqual(trail.space, "device:philips_intellivue")
+        self.assertEqual(trail.source_doc_id, "sm-manual-1")
+        self.assertEqual(len(trail.prior_incidents), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

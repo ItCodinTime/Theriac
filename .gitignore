@@ -32,6 +32,9 @@ node_modules/
 out/
 .vercel/
 
+# Internal planning / gap notes (keep local)
+docs/IMPLEMENTATION-GAP-ANALYSIS.md
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

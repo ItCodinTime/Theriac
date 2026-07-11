@@ -33,11 +33,14 @@ from services.policy_leases import cancel_expiry, schedule_expiry
 from services.vultr_database import save_evidence_index
 from services.memory import (
     IngestionResult,
+    MemoryCitationTrail,
     MemoryError,
+    build_citation_trail,
     ingest_manual,
     load_device_profile,
     query_cve,
     query_manual,
+    query_prior_incidents,
     record_enforcement,
     retrieve_document,
     save_device_profile,
@@ -137,9 +140,9 @@ async def run_pipeline(
         2. Extract     — LLM pulls device model, firmware, allowed ports (Contract A)
         3. CVE Check   — Nemotron autonomously calls check_cve tool
         4. Decide      — Nemotron generates zero-trust policy (Contract B)
-        5. Store       — chunks the manual into Vultr Vector Store using Contract A
+        5. Store       — commits the manual into Supermemory (device space) using Contract A
         6. Enforce     — Nemotron calls apply_firewall_rule tool
-        7. Report      — LLM expands memo for the frontend
+        7. Report      — builds memo with Supermemory citation trail for the frontend
 
     Args:
         raw_pdf_text: Raw text extracted from the medical device PDF.
@@ -195,17 +198,17 @@ async def run_pipeline(
     # ------------------------------------------------------------------
     # Step 5: Commit Contract A and chunks before any enforcement decision.
     # ------------------------------------------------------------------
-    await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
+    await _emit("\n[STEP 5] Storing Contract A in Supermemory (device immune-memory space)...\n")
     try:
         ingestion = await ingest_manual(manual_text, contract_a)
         contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
         await publish_event("contract-a.extracted", ingestion.source_doc_id, contract_a.model_dump(mode="json"))
         await _emit(
-            f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
-            f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
+            f"[STEP 5 DONE] Stored in Supermemory space {ingestion.collection_id}; "
+            f"doc {ingestion.source_doc_id}.\n"
         )
     except MemoryError as exc:
-        await _emit(f"[STEP 5 WARN] Vector Store ingestion failed ({exc}) — continuing without vector storage.\n")
+        await _emit(f"[STEP 5 WARN] Supermemory ingestion failed ({exc}) — continuing without memory write.\n")
         ingestion = IngestionResult(
             collection_id="",
             source_doc_id=contract_a.source_doc_id,
@@ -215,14 +218,14 @@ async def run_pipeline(
 
     retrieved_context = ""
     if ingestion.collection_id:
-        await _emit("\n[MEMORY] Retrieving authoritative evidence through Vultr RAG...\n")
+        await _emit("\n[MEMORY] Retrieving authoritative evidence from Supermemory...\n")
         try:
             retrieved_context = await query_manual(ingestion.collection_id, contract_a)
             await _emit("[MEMORY DONE] Manufacturer evidence attached to the decision.\n")
         except MemoryError as exc:
             await _emit(f"[MEMORY WARN] Manual retrieval failed ({exc}) — proceeding without retrieved evidence.\n")
     else:
-        await _emit("[MEMORY SKIPPED] No Vector Store collection available for this run.\n")
+        await _emit("[MEMORY SKIPPED] No Supermemory space available for this run.\n")
 
     # ------------------------------------------------------------------
     # Step 3 + 4 + 6: the tool-capable Vultr model checks CVE memory,
@@ -290,7 +293,7 @@ async def run_pipeline(
             tool_evidence["cve"] = await query_cve(
                 contract_a.device_model, contract_a.firmware_version
             )
-            await _emit("\n[CVE] Deterministic CVE cross-check against Vultr collection completed.\n")
+            await _emit("\n[CVE] Deterministic CVE cross-check against Supermemory CVE space completed.\n")
         except MemoryError as exc:
             await _emit(f"\n[CVE WARN] CVE cross-check unavailable ({exc}).\n")
 
@@ -300,7 +303,7 @@ async def run_pipeline(
     evidence_cve = _cve_id_from_evidence(tool_evidence["cve"])
     if evidence_cve and (not contract_b.cve_flagged or contract_b.cve_flagged.strip().upper() == "NONE"):
         contract_b = contract_b.model_copy(update={"cve_flagged": evidence_cve})
-        await _emit(f"\n[CVE] Grounded CVE from Vultr collection: {evidence_cve}\n")
+        await _emit(f"\n[CVE] Grounded CVE from Supermemory: {evidence_cve}\n")
 
     # ------------------------------------------------------------------
     # Feature 1: Real confidence from reasoning depth AND evidence grounding.
@@ -343,8 +346,24 @@ async def run_pipeline(
     # ------------------------------------------------------------------
     # Step 7: Expand the incident memo for Oleh's frontend
     # ------------------------------------------------------------------
-    await _emit("\n[STEP 7] Generating incident memo with citation trail...\n")
-    contract_b.memo_text = _build_memo(contract_b, contract_a, tool_evidence, confidence_explanation)
+    await _emit("\n[STEP 7] Generating incident memo with Supermemory citation trail...\n")
+    prior_incidents: list[str] = []
+    try:
+        prior_incidents = await query_prior_incidents(contract_a.device_model)
+        if prior_incidents:
+            await _emit(
+                f"[MEMORY] {len(prior_incidents)} prior incident(s) recalled from Supermemory for citation.\n"
+            )
+    except MemoryError as exc:
+        await _emit(f"[MEMORY WARN] Prior-incident recall failed ({exc}).\n")
+    citation_trail = build_citation_trail(
+        device_model=contract_a.device_model,
+        ingestion=ingestion,
+        prior_incidents=prior_incidents,
+    )
+    contract_b.memo_text = _build_memo(
+        contract_b, contract_a, tool_evidence, confidence_explanation, citation_trail
+    )
     if drift_alert:
         # Appended after _build_memo so the drift finding survives into the memo.
         contract_b.memo_text += f"\n\nDRIFT ALERT: {drift_alert}"
@@ -458,7 +477,7 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
     This is the bridge between the LLM and the actual tool implementations.
     """
     if tool_name == "retrieve_document":
-        # Non-fatal: a Vector Store hiccup should degrade the answer, not 500 the run.
+        # Non-fatal: a Supermemory hiccup should degrade the answer, not 500 the run.
         try:
             return await retrieve_document(
                 query=arguments.get("query", ""),
@@ -705,12 +724,14 @@ def _build_memo(
     contract_a: ContractA,
     tool_evidence: dict,
     confidence_explanation: str,
+    citation_trail: MemoryCitationTrail | None = None,
 ) -> str:
     """
     Builds the incident memo deterministically from structured data.
     Guarantees a clean THREAT/ACTION/STATUS/CITATIONS format every time —
     no LLM reasoning leaks, no template placeholders, no truncation.
-    Citations are grounded in the RAG evidence returned by the agent's tool calls.
+    Citations ground both manual page refs and Supermemory document IDs /
+    prior institutional incidents.
     """
     allows = [r.port for r in contract_b.firewall_rules if r.action == "ALLOW"]
     denies = [r.port for r in contract_b.firewall_rules if r.action == "DENY"]
@@ -718,7 +739,7 @@ def _build_memo(
     has_cve = cve and cve not in ("NONE", "")
 
     # Look up the CVE description from the local curated dataset (the same
-    # records ingested into the Vultr collection). Deterministic and clean —
+    # records ingested into the Supermemory CVE space). Deterministic and clean —
     # parsing the RAG output leaked JSON fragments into the memo.
     cve_description = _cve_description_lookup(cve) if has_cve else ""
     threat = (
@@ -777,12 +798,33 @@ def _build_memo(
                 )
         citation_lines.append(f"  - Port {rule.port} ({rule.action}): {justification}")
 
+    trail = citation_trail or MemoryCitationTrail()
+    memory_lines: list[str] = []
+    if trail.space:
+        memory_lines.append(f"  - Supermemory space: {trail.space}")
+    if trail.source_doc_id:
+        memory_lines.append(f"  - Manual memory doc: {trail.source_doc_id}")
+    for item_id in trail.item_ids:
+        if item_id and item_id != trail.source_doc_id:
+            memory_lines.append(f"  - Memory item: {item_id}")
+    if trail.prior_incidents:
+        memory_lines.append("  - Prior institutional memory:")
+        for prior in trail.prior_incidents:
+            memory_lines.append(f"      • {prior}")
+    else:
+        memory_lines.append("  - Prior institutional memory: none recalled for this device yet")
+
+    if confidence_explanation:
+        memory_lines.append(f"  - Confidence basis: {confidence_explanation}")
+
     citations = "\n".join(citation_lines)
+    memory_block = "\n".join(memory_lines)
     return (
         f"THREAT: {threat}\n"
         f"ACTION: {action}\n"
         f"STATUS: {status}\n"
-        f"CITATIONS:\n{citations}"
+        f"CITATIONS:\n{citations}\n"
+        f"MEMORY:\n{memory_block}"
     )
 
 

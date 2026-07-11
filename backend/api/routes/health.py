@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.get("/healthz")
 async def health_check():
-    return {"status": "ok", "service": "panacea-backend"}
+    return {"status": "ok", "service": "theriac-backend"}
 
 
 @router.get("/readyz")

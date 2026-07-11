@@ -138,7 +138,7 @@ Health check:
 
 ```bash
 curl http://localhost:8000/healthz
-# {"status":"ok","service":"panacea-backend"}
+# {"status":"ok","service":"theriac-backend"}
 ```
 
 ### Frontend
@@ -149,6 +149,8 @@ npm install
 cp .env.example .env.local   # point NEXT_PUBLIC_API_URL at your backend
 npm run dev                  # http://localhost:3000
 ```
+
+Live Command Center: [https://theriac-eta.vercel.app/](https://theriac-eta.vercel.app/)
 
 ### Memory engine (Supermemory)
 
@@ -289,7 +291,7 @@ PLAN:
 |-------|--------|-------------|
 | **Brian** | Agent Orchestration | Serverless Inference agent loop, citation trail, confidence scoring, drift detection, audit log, multi-run + explain APIs |
 | **Goutham** | The Memory Engine | Self-hosted Supermemory graph backbone — per-device spaces, hybrid search + rerank, durable drift profiles, CVE grounding (Vultr Vector Store archive tier) |
-| **Zain** | Threat Execution | Live Vultr Cloud Firewall executor + attacker VM handoff |
+| **Zain** | Threat Execution & Adaptive Host Immunity | Live Vultr Cloud Firewall executor + attacker VM; AHI fingerprints attacks and uses Supermemory so the firewall gets better at recognizing / stopping similar threats over time |
 | **Mohamed** | IIoT Target & Sourcing | Philips VM target, VPC networking, real manual sourcing (UDP 24105, p.29) |
 | **Oleh** | The Command Center | Next.js UI, WebSocket terminal, Human Override, Incident Memo rendering |
 

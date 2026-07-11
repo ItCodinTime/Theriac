@@ -356,6 +356,31 @@ class MemorySearchTests(unittest.TestCase):
         results = asyncio.run(run())
         self.assertEqual(results, [])
 
+    def test_search_recalls_fp_from_document_metadata_when_search_empty(self) -> None:
+        """FP feedback must be recallable via metadata even if hybrid search is empty."""
+        sm, http_client, docs = _mock_supermemory_client(stored_records=None)
+
+        async def run():
+            try:
+                await _store_memory(
+                    _memory_record(
+                        fingerprint="fp_meta_only",
+                        false_positive=True,
+                        action_taken="ignored",
+                        incident_summary="Analyst feedback: FALSE POSITIVE.",
+                    ),
+                    client=sm,
+                    record_type="immune-feedback",
+                )
+                return await _search_similar("fp_meta_only", client=sm)
+            finally:
+                await http_client.aclose()
+
+        results = asyncio.run(run())
+        self.assertTrue(docs)
+        self.assertTrue(results)
+        self.assertTrue(any(r.false_positive for r in results))
+
     def test_search_falls_back_to_v3_when_v4_empty(self) -> None:
         """When /v4/search returns nothing, should fall back to /v3/search."""
         stored = [_memory_record(incident_summary="Found via chunk search")]
