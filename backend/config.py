@@ -45,3 +45,6 @@ SUPERMEMORY_TIMEOUT = float(os.getenv("SUPERMEMORY_TIMEOUT", "30"))
 SUPERMEMORY_SEARCH_LIMIT = int(os.getenv("SUPERMEMORY_SEARCH_LIMIT", "5"))
 # When true, mirror sealed records to the legacy Vultr Vector Store archive tier.
 VULTR_ARCHIVE_ENABLED = os.getenv("VULTR_ARCHIVE_ENABLED", "false").lower() == "true"
+
+# Adaptive Host Immunity — container tag for the immune-memory space in Supermemory.
+IMMUNITY_CONTAINER_TAG = os.getenv("IMMUNITY_CONTAINER_TAG", "immunity-memory")
