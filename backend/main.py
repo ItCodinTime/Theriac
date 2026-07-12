@@ -12,6 +12,7 @@ from api.routes.evidence import router as evidence_router
 from api.routes.health import router as health_router
 from api.routes.immunity import router as immunity_router
 from api.routes.manuals import router as manuals_router
+from api.routes.memory import router as memory_router
 from api.routes.policy import router as policy_router
 from api.websocket import router as ws_router
 from services.policy_leases import restore_leases
@@ -47,6 +48,7 @@ app.include_router(health_router)
 app.include_router(agent_router)
 app.include_router(attacks_router)
 app.include_router(immunity_router)
+app.include_router(memory_router)
 app.include_router(manuals_router)
 app.include_router(policy_router)
 app.include_router(evidence_router)

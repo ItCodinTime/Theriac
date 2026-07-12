@@ -9,6 +9,7 @@ port edges so exploit attempts on a CVE-linked port harden more aggressively.
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -27,10 +28,29 @@ from services.supermemory import (
 _HARDEN_THRESHOLD = int(os.getenv("ATTACK_HARDEN_THRESHOLD", "1"))
 # CVE-correlated probes harden even at this lower count (default: same as base).
 _CVE_HARDEN_THRESHOLD = int(os.getenv("ATTACK_CVE_HARDEN_THRESHOLD", "1"))
+# Old observations decay so a stale one-off probe does not harden a device
+# forever. A value <= 0 disables decay and keeps legacy behavior.
+_DECAY_HALF_LIFE_DAYS = float(os.getenv("ATTACK_MEMORY_HALF_LIFE_DAYS", "30"))
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _age_weight(observed_at: str) -> float:
+    """Return an exponential recency weight in [0, 1]."""
+    if _DECAY_HALF_LIFE_DAYS <= 0:
+        return 1.0
+    if not observed_at:
+        return 1.0
+    try:
+        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 1.0
+    age_days = max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 86400)
+    return max(0.05, math.pow(0.5, age_days / _DECAY_HALF_LIFE_DAYS))
 
 
 async def ingest_attack_event(
@@ -78,6 +98,12 @@ async def ingest_attack_event(
         "observed_at": event.observed_at.isoformat() if event.observed_at else _now_iso(),
     }
     doc_id = await sm.add_document(content, container_tag=space, metadata=metadata)
+    try:
+        from services.memory_ops import register_memory_space
+
+        await register_memory_space(space, kind="attack", device_model=event.device_model, client=sm)
+    except Exception:  # noqa: BLE001 — registry failure must not block telemetry
+        pass
 
     link_id = ""
     if related_cve:
@@ -253,6 +279,7 @@ async def query_attack_history(
     port_stats: dict[int, dict[str, Any]] = defaultdict(
         lambda: {
             "count": 0,
+            "weighted_count": 0.0,
             "protocols": set(),
             "severities": set(),
             "last_seen": "",
@@ -265,6 +292,8 @@ async def query_attack_history(
             continue
         stats = port_stats[port]
         stats["count"] += 1
+        seen = str(event.get("observed_at") or "")
+        stats["weighted_count"] += _age_weight(seen)
         if event.get("protocol"):
             stats["protocols"].add(str(event["protocol"]).upper())
         if event.get("severity"):
@@ -276,7 +305,6 @@ async def query_attack_history(
             )
         if cve:
             stats["related_cves"].add(cve)
-        seen = str(event.get("observed_at") or "")
         if seen >= str(stats["last_seen"]):
             stats["last_seen"] = seen
 
@@ -284,6 +312,7 @@ async def query_attack_history(
         {
             "port": port,
             "count": data["count"],
+            "weighted_count": round(float(data["weighted_count"]), 3),
             "last_seen": data["last_seen"],
             "protocols": sorted(data["protocols"]),
             "severities": sorted(data["severities"]),
@@ -295,7 +324,7 @@ async def query_attack_history(
     harden_ports: list[int] = []
     for p in probed_ports:
         threshold = _CVE_HARDEN_THRESHOLD if p["related_cves"] else _HARDEN_THRESHOLD
-        if p["count"] >= threshold:
+        if float(p.get("weighted_count") or 0.0) >= threshold:
             harden_ports.append(p["port"])
 
     correlations: list[AttackCorrelation] = []
@@ -331,7 +360,8 @@ async def query_attack_history(
         narrative = (
             f"Attack memory for {device_model} ({space}): {'; '.join(bits)}. "
             f"Harden (force DENY) ports: {harden_ports or 'none'}. "
-            f"CVE graph: {related_cves or 'none'}."
+            f"CVE graph: {related_cves or 'none'}. "
+            f"Decay half-life: {_DECAY_HALF_LIFE_DAYS:g} day(s)."
         )
 
     return AttackHistorySummary(

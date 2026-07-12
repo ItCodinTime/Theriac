@@ -46,6 +46,7 @@ from services.memory import (
     save_device_profile,
 )
 from services.attack_memory import harden_policy_from_attacks, query_attack_history
+from services.memory_ops import record_policy_facts, record_policy_outcome
 from schemas.attack_event import AttackHistorySummary
 
 # Demo manual — sourced from the real Philips IntelliVue Data Export Interface
@@ -500,6 +501,31 @@ async def run_pipeline(
             )
         except MemoryError as exc:
             await _emit(f"[MEMORY WARN] Could not write enforcement outcome back to memory ({exc}).\n")
+
+    # Operational memory layer: write explicit facts and the initial policy
+    # outcome so later inspection/fleet recall can explain why a decision changed.
+    try:
+        fact_ids = await record_policy_facts(
+            contract_a=contract_a,
+            contract_b=contract_b,
+            cve_evidence=tool_evidence.get("cve", ""),
+            attack_history=attack_history,
+        )
+        await _emit(f"[MEMORY] Recorded {len(fact_ids)} policy fact(s) in Supermemory.\n")
+    except Exception as exc:  # noqa: BLE001
+        await _emit(f"[MEMORY WARN] Could not write policy facts ({exc}).\n")
+
+    try:
+        await record_policy_outcome(
+            device_model=contract_a.device_model,
+            lease_id=lease.lease_id,
+            outcome="enforced",
+            notes=f"Initial enforcement recorded on {receipt.enforcement_plane}",
+            confidence_score=contract_b.confidence_score,
+            operator_id=operator_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _emit(f"[MEMORY WARN] Could not write policy outcome ({exc}).\n")
 
     # Persist this scan's Contract A as the durable, restart-safe drift baseline.
     try:

@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 load_dotenv(BACKEND_ROOT / ".env")
 
 from services.supermemory import CVE_CONTAINER_TAG, SupermemoryClient
+from services.memory_ops import register_memory_space
 
 
 async def ingest(path: Path, also_vultr: bool) -> None:
@@ -31,6 +32,7 @@ async def ingest(path: Path, also_vultr: bool) -> None:
         raise ValueError("CVE input must be a JSON array")
 
     client = SupermemoryClient()
+    await register_memory_space(CVE_CONTAINER_TAG, kind="cve", client=client)
     for record in records:
         if not isinstance(record, dict) or not record.get("cve_id"):
             raise ValueError("Every CVE record must be an object containing cve_id")

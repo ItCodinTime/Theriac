@@ -352,6 +352,13 @@ async def _store_memory(
             "false_positive": str(record.false_positive).lower(),
         },
     )
+    if client is None:
+        try:
+            from services.memory_ops import register_memory_space
+
+            await register_memory_space(_get_container_tag(), kind="immunity", client=sm)
+        except Exception:  # noqa: BLE001 — registry is best-effort only
+            pass
     return doc_id
 
 

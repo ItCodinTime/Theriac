@@ -90,6 +90,12 @@ async def ingest_manual(manual_text: str, contract: ContractA) -> IngestionResul
         "required_ports": ",".join(str(p.port) for p in contract.allowed_ports),
     }
     doc_id = await client.add_document(manual_text, container_tag=tag, metadata=metadata)
+    try:
+        from services.memory_ops import register_memory_space
+
+        await register_memory_space(tag, kind="device", device_model=contract.device_model, client=client)
+    except Exception:  # noqa: BLE001 — registry is operational metadata only
+        pass
 
     source_doc_id = contract.source_doc_id.strip() or doc_id
 
@@ -170,6 +176,12 @@ async def record_enforcement(collection_id: str, payload: dict, description: str
     await SupermemoryClient().add_document(
         content, container_tag=tag, metadata={"type": "enforcement", "description": description}
     )
+    try:
+        from services.memory_ops import register_memory_space
+
+        await register_memory_space(tag, kind="device")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def query_prior_incidents(device_model: str, *, limit: int = 5) -> list[str]:
@@ -325,6 +337,12 @@ async def save_device_profile(
                 "baseline": json.dumps(envelope, separators=(",", ":")),
             },
         )
+        try:
+            from services.memory_ops import register_memory_space
+
+            await register_memory_space(tag, kind="device", device_model=device_model)
+        except Exception:  # noqa: BLE001
+            pass
     except SupermemoryError:
         # Losing the baseline write only costs the next run's drift comparison;
         # it must never fail the enforcement run itself.

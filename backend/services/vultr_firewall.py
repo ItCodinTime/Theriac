@@ -3,7 +3,10 @@
 # Brian's orchestrator calls these two functions with a ContractB payload.
 
 import os
+import socket
+from datetime import datetime, timedelta, timezone
 
+import httpx
 import requests
 
 from schemas.contract_b import ContractB
@@ -21,6 +24,136 @@ HTTP_TIMEOUT = 10  # seconds per Vultr API call
 # Port that should never be exposed to the public internet.
 SSH_PORT = 22
 FORBIDDEN_PUBLIC_SOURCE = "0.0.0.0/0"
+
+
+class VultrNATGatewayEnforcer:
+    """Compatibility enforcer for NAT Gateway port forwards + firewall rules.
+
+    The active orchestrator path uses ``apply_rules`` below. This class is kept
+    for the control-plane tests and for deployments that still enforce through a
+    managed NAT gateway instead of a firewall group.
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        gateway_id: str,
+        device_ip: str,
+        client: httpx.Client | None = None,
+        base_url: str = VULTR_API_BASE,
+    ) -> None:
+        self.api_key = api_key
+        self.gateway_id = gateway_id
+        self.device_ip = device_ip
+        self.client = client or httpx.Client(timeout=HTTP_TIMEOUT)
+        self.base_url = base_url.rstrip("/")
+
+    @property
+    def _headers_httpx(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _url(self, suffix: str) -> str:
+        return f"{self.base_url}/nat-gateways/{self.gateway_id}{suffix}"
+
+    def _list(self, suffix: str) -> list[dict]:
+        response = self.client.get(self._url(suffix), headers=self._headers_httpx)
+        response.raise_for_status()
+        payload = response.json() or {}
+        return payload.get("data") or payload.get("rules") or payload.get("firewall_rules") or []
+
+    def _post(self, suffix: str, body: dict) -> dict:
+        response = self.client.post(self._url(suffix), headers=self._headers_httpx, json=body)
+        response.raise_for_status()
+        return response.json() or {}
+
+    def _delete(self, suffix: str, rule_id: str) -> None:
+        response = self.client.delete(self._url(f"{suffix}/{rule_id}"), headers=self._headers_httpx)
+        response.raise_for_status()
+
+    def _probe(self, port: int) -> str:
+        host = _env("VULTR_NETWORK_PROBE_HOST", self.device_ip)
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return "reachable"
+        except OSError:
+            return "blocked"
+
+    def apply(self, policy: ContractB) -> dict:
+        expires = datetime.now(timezone.utc) + timedelta(
+            seconds=int(_env("VULTR_POLICY_LEASE_SECONDS", "900") or "900")
+        )
+        forwards = self._list("/port-forwarding-rules")
+        firewall_rules = self._list("/firewall-rules")
+        changes: list[dict] = []
+
+        for rule in policy.firewall_rules:
+            port = int(rule.port)
+            action = rule.action.upper()
+
+            if action == "ALLOW":
+                if not any(int(item.get("internal_port") or item.get("port") or 0) == port for item in forwards):
+                    created = self._post(
+                        "/port-forwarding-rules",
+                        {
+                            "protocol": "tcp",
+                            "external_port": port,
+                            "internal_ip": self.device_ip,
+                            "internal_port": port,
+                        },
+                    )
+                    forwards.append({"id": created.get("id", ""), "internal_port": port})
+                if not any(str(item.get("port") or "") == str(port) for item in firewall_rules):
+                    created = self._post(
+                        "/firewall-rules",
+                        {
+                            "protocol": "tcp",
+                            "port": str(port),
+                            "source": "0.0.0.0/0",
+                            "notes": f"THERIAC allow; expires {expires.isoformat()}",
+                        },
+                    )
+                    firewall_rules.append({"id": created.get("id", ""), "port": str(port)})
+                changes.append({
+                    "port": port,
+                    "action": "ALLOW",
+                    "status": "active",
+                    "probe_status": self._probe(port),
+                })
+                continue
+
+            if action == "DENY":
+                for item in list(firewall_rules):
+                    if str(item.get("port") or "") == str(port) and item.get("id"):
+                        self._delete("/firewall-rules", str(item["id"]))
+                        firewall_rules.remove(item)
+                for item in list(forwards):
+                    item_port = int(item.get("internal_port") or item.get("external_port") or item.get("port") or 0)
+                    if item_port == port and item.get("id"):
+                        self._delete("/port-forwarding-rules", str(item["id"]))
+                        forwards.remove(item)
+                changes.append({
+                    "port": port,
+                    "action": "DENY",
+                    "status": "removed",
+                    "probe_status": self._probe(port),
+                })
+                continue
+
+            changes.append({"port": port, "action": action, "status": "skipped"})
+
+        return {
+            "status": "applied",
+            "receipt": {
+                "provider": "vultr",
+                "gateway_id": self.gateway_id,
+                "device_ip": self.device_ip,
+                "changes": changes,
+            },
+        }
 
 
 def _env(name: str, default: str = "") -> str:

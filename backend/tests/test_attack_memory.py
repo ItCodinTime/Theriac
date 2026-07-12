@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from datetime import datetime, timezone
 
 import httpx
 
@@ -95,8 +96,34 @@ class AttackMemoryCorrelationTests(unittest.TestCase):
         self.assertTrue(stored.get("related_cve"))
         self.assertTrue(stored.get("correlation_doc_id"))
         self.assertIn(22, history.harden_ports)
+        self.assertGreaterEqual(history.probed_ports[0].get("weighted_count", 0), 0.9)
         self.assertTrue(history.related_cves)
         self.assertTrue(any(d.get("metadata", {}).get("type") == "attack-cve-link" for d in docs))
+
+    def test_stale_probe_decays_below_harden_threshold(self) -> None:
+        sm, http_client, _docs = _mock_client()
+        old_half_life = attack_memory._DECAY_HALF_LIFE_DAYS
+
+        async def run():
+            try:
+                attack_memory._DECAY_HALF_LIFE_DAYS = 1
+                event = AttackEvent(
+                    device_model="Unknown_Device",
+                    attempted_port=12345,
+                    protocol="TCP",
+                    source_ip="64.177.113.13",
+                    reason="stale probe",
+                    observed_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                )
+                await attack_memory.ingest_attack_event(event, client=sm)
+                return await attack_memory.query_attack_history("Unknown_Device", client=sm)
+            finally:
+                attack_memory._DECAY_HALF_LIFE_DAYS = old_half_life
+                await http_client.aclose()
+
+        history = asyncio.run(run())
+        self.assertNotIn(12345, history.harden_ports)
+        self.assertLess(history.probed_ports[0]["weighted_count"], 1)
 
     def test_harden_sets_cve_flagged_from_graph(self) -> None:
         policy = ContractB(

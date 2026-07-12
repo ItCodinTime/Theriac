@@ -100,7 +100,16 @@ class VultrVectorStore:
     ) -> None:
         self.api_key = api_key or _vector_store_api_key()
         self.base_url = (base_url or _vector_store_base_url()).rstrip("/")
-        self.collection_id = collection_id or os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
+        # If a caller explicitly supplies collection_name without collection_id,
+        # they are asking us to resolve/create by name. Do not let a loaded .env
+        # collection ID short-circuit that path; tests and multi-device archive
+        # setup both depend on name-based resolution.
+        if collection_id is not None:
+            self.collection_id = collection_id
+        elif collection_name is not None:
+            self.collection_id = ""
+        else:
+            self.collection_id = os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
         self.collection_name = collection_name or os.getenv("VULTR_VECTOR_COLLECTION_NAME", "panacea-manuals")
         self.timeout = timeout or float(os.getenv("VULTR_VECTOR_TIMEOUT", "30"))
         self._client = client
@@ -271,7 +280,7 @@ class VultrVectorStore:
             # Full CONTRACT_A is already stored in the source record above.
             content = (
                 f"Device: {stored_contract.device_model} | Firmware: {stored_contract.firmware_version} | "
-                f"Source: {source_doc_id}\n\n{chunk}"
+                f"Source: {source_doc_id}\nCONTRACT_A: {contract_json}\n\n{chunk}"
             )
             description = (
                 f"{stored_contract.device_model} {stored_contract.firmware_version}; "
