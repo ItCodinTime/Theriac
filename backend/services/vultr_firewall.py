@@ -137,17 +137,27 @@ def _is_forbidden_public_ssh(port: int, source_cidr: str) -> bool:
 
 def _fallback_response(policy: ContractB, group_id: str, reason: str) -> dict:
     """Return a demo-safe fallback shape when live Vultr calls can't happen."""
+    auth_failed = "401" in reason or "unauthorized" in reason.lower()
     applied = [
         {"port": r.port, "action": r.action, "result": "mocked"}
         for r in policy.firewall_rules
     ]
+    note = (
+        "Vultr API unauthorized (401) — VULTR_API_KEY is not valid for this "
+        f"firewall group ({group_id}). Use the API key from the Vultr account "
+        "that owns the group. Live rules were NOT changed. "
+        f"({reason})"
+        if auth_failed
+        else f"Live Vultr firewall unavailable, mocked firewall action completed for demo. ({reason})"
+    )
     return {
-        "status": "fallback_success",
+        "status": "auth_failed" if auth_failed else "fallback_success",
         "mode": "mock",
         "firewall_group_id": group_id,
+        "auth_error": auth_failed,
         "applied_rules": applied,
         "memo_text": policy.memo_text,
-        "note": f"Live Vultr firewall unavailable, mocked firewall action completed for demo. ({reason})",
+        "note": note,
     }
 
 
@@ -172,7 +182,14 @@ def list_current_rules(group_id: str = None) -> dict:
         rules = _list_rules(gid)
         return {"status": "success", "firewall_group_id": gid, "rules": rules}
     except Exception as exc:  # noqa: BLE001 - deliberately broad, this must never raise
-        return {"status": "error", "firewall_group_id": gid, "error": str(exc)}
+        err = str(exc)
+        hint = ""
+        if "401" in err or "Unauthorized" in err:
+            hint = (
+                " — VULTR_API_KEY is unauthorized for this group. "
+                "Use the API key from the Vultr account that owns the firewall group."
+            )
+        return {"status": "error", "firewall_group_id": gid, "error": err + hint, "auth_error": "401" in err or "Unauthorized" in err}
 
 
 def apply_rules(policy: ContractB) -> dict:
