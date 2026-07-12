@@ -95,11 +95,18 @@ def _list_rules(group_id: str) -> list:
 
 def _create_rule(group_id: str, port: int, source_cidr: str, notes: str) -> dict:
     url = f"{VULTR_API_BASE}/firewalls/{group_id}/rules"
+    # Vultr's rule API takes the source as separate `subnet` + `subnet_size`
+    # fields, NOT a CIDR in `source` (that field is reserved for special values
+    # like "cloudflare" and must be empty for a custom subnet). Passing a CIDR in
+    # `source` returns 400 "Invalid IPv4 address".
+    subnet, _, size = source_cidr.partition("/")
     body = {
         "ip_type": "v4",
         "protocol": "tcp",
         "port": str(port),
-        "source": source_cidr,
+        "subnet": subnet,
+        "subnet_size": int(size) if size else 32,
+        "source": "",
         "notes": notes,
     }
     resp = requests.post(url, headers=_headers(), json=body, timeout=HTTP_TIMEOUT)
