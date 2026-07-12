@@ -48,12 +48,15 @@ def apply_firewall_rule(
 
     return json.dumps({
         "status": result.get("status", "applied"),
+        "mode": result.get("mode", "unknown"),
         "vpc_id": target_vpc_id,
         "rules_enforced": len(firewall_rules),
         "confidence_score": confidence_score,
         "cve_flagged": cve_flagged,
         "lease_id": result.get("lease_id"),
         "expires_at": result.get("expires_at"),
+        "auth_error": bool(result.get("auth_error")),
+        "note": result.get("note", ""),
     })
 
 

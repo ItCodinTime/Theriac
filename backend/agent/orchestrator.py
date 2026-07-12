@@ -435,6 +435,13 @@ async def run_pipeline(
     await _emit("\n[STEP 7 DONE] Memo ready.\n", "content")
 
     enforcement = get_enforcement_result(vpc_id) or {}
+    if enforcement.get("auth_error") or enforcement.get("status") == "auth_failed":
+        await _emit(
+            f"\n[FIREWALL AUTH] {enforcement.get('note') or 'Vultr API unauthorized for firewall group.'}\n",
+            "reasoning",
+        )
+    elif enforcement.get("mode") == "mock" and enforcement.get("note"):
+        await _emit(f"\n[FIREWALL] {enforcement.get('note')}\n", "reasoning")
     lease_id = enforcement.get("lease_id") or f"lease-{uuid.uuid4().hex[:12]}"
     lease_seconds = int(os.getenv("VULTR_POLICY_LEASE_SECONDS", "900"))
     from datetime import timedelta

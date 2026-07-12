@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -48,23 +49,28 @@ class VultrVectorStoreTests(unittest.TestCase):
         async def run_test():
             transport = httpx.MockTransport(handler)
             async with httpx.AsyncClient(transport=transport) as client:
-                store = VultrVectorStore(
-                    api_key="test-key",
-                    collection_name="panacea-manuals",
-                    client=client,
-                )
-                contract = ContractA(
-                    device_model="Philips_IntelliVue",
-                    firmware_version="B.01",
-                    allowed_ports=[AllowedPort(port=3200, protocol="TCP", reason="HL7 Patient Data")],
-                    source_doc_id="",
-                )
-                return await store.ingest_manual(
-                    "Port 3200 carries HL7 data. " * 30,
-                    contract,
-                    chunk_size=180,
-                    overlap=30,
-                )
+                with patch.dict(
+                    "os.environ",
+                    {"VULTR_VECTOR_COLLECTION_ID": "", "VULTR_VECTOR_COLLECTION_NAME": "panacea-manuals"},
+                ):
+                    store = VultrVectorStore(
+                        api_key="test-key",
+                        collection_id="",
+                        collection_name="panacea-manuals",
+                        client=client,
+                    )
+                    contract = ContractA(
+                        device_model="Philips_IntelliVue",
+                        firmware_version="B.01",
+                        allowed_ports=[AllowedPort(port=3200, protocol="TCP", reason="HL7 Patient Data")],
+                        source_doc_id="",
+                    )
+                    return await store.ingest_manual(
+                        "Port 3200 carries HL7 data. " * 30,
+                        contract,
+                        chunk_size=180,
+                        overlap=30,
+                    )
 
         result = asyncio.run(run_test())
 
@@ -77,8 +83,8 @@ class VultrVectorStoreTests(unittest.TestCase):
         source_body = json.loads(item_requests[0].content)
         first_chunk_body = json.loads(item_requests[1].content)
         self.assertIn("manual source record", source_body["content"])
-        self.assertIn('"source_doc_id":"item-1"', first_chunk_body["content"])
-        self.assertIn('"port":3200', first_chunk_body["content"])
+        self.assertIn("Source: item-1", first_chunk_body["content"])
+        self.assertIn("Port 3200", first_chunk_body["content"])
         self.assertNotIn("chroma", first_chunk_body["content"].lower())
         self.assertNotIn("qdrant", first_chunk_body["content"].lower())
 
@@ -107,8 +113,17 @@ class VultrVectorStoreTests(unittest.TestCase):
         async def run_test():
             transport = httpx.MockTransport(handler)
             async with httpx.AsyncClient(transport=transport) as client:
-                store = VultrVectorStore(api_key="test-key", collection_name="panacea-manuals", client=client)
-                return await store.ensure_collection()
+                with patch.dict(
+                    "os.environ",
+                    {"VULTR_VECTOR_COLLECTION_ID": "", "VULTR_VECTOR_COLLECTION_NAME": "panacea-manuals"},
+                ):
+                    store = VultrVectorStore(
+                        api_key="test-key",
+                        collection_id="",
+                        collection_name="panacea-manuals",
+                        client=client,
+                    )
+                    return await store.ensure_collection()
 
         collection_id = asyncio.run(run_test())
         self.assertEqual(collection_id, "winner-123")
